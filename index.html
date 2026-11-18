@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f8f6f0">
+  <meta name="description" content="A simple personal task organizer.">
+  <title>Andie’s HQ</title>
+  <link rel="icon" href="mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.mjs"></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar" aria-label="Workspace">
+      <a class="brand" href="#Today"><img src="mark.svg" alt=""><span>Andie’s HQ</span></a>
+      <button class="primary open-add" type="button"></button>
+      <nav id="sidebar-nav" aria-label="Main navigation"></nav>
+      <div class="side-bottom" id="side-bottom"></div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar">
+        <a class="brand mobile-brand" href="#Today"><img src="mark.svg" alt=""><span>Andie’s HQ</span></a>
+        <div class="crumb" id="crumb"></div>
+        <button class="search-button" type="button" data-view="Search"></button>
+      </header>
+      <main id="main"></main>
+    </div>
+  </div>
+  <nav id="bottom-nav" aria-label="Mobile navigation"></nav>
+  <dialog id="editor" aria-labelledby="editor-title"></dialog>
+  <dialog id="confirm" aria-labelledby="confirm-title"></dialog>
+  <div id="notice" role="status" aria-live="polite"></div>
+</body>
+</html>
