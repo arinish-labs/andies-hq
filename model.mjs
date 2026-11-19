@@ -45,9 +45,25 @@ export function makeTask(title, fields = {}, now = new Date()) {
   }, fields.status ?? 'To Do', now);
 }
 
+export function saveTask(state, { title, area = state.quickArea ?? defaultArea, status = 'To Do', ...fields }, id) {
+  const existing = id ? state.tasks.find(task => task.id === id) : null;
+  if (id && !existing) throw new Error('This task was deleted in another tab.');
+  if (!title.trim()) throw new Error('Enter a task title.');
+  if (!areas.includes(area)) throw new Error('Choose Work or Personal.');
+  if (fields.project && !state.projects.some(project => project.id === fields.project && project.area === area)) {
+    throw new Error('Choose a project in the selected area.');
+  }
+  const changes = { ...fields, title: title.trim(), area, status };
+  const task = existing ? setStatus({ ...existing, ...changes }, status) : makeTask(title, changes);
+  return {
+    ...state,
+    quickArea: existing ? state.quickArea : area,
+    tasks: existing ? state.tasks.map(item => item.id === id ? task : item) : [...state.tasks, task]
+  };
+}
+
 export function quickAddTask(state, title, area = state.quickArea ?? defaultArea) {
-  const task = makeTask(title, { area });
-  return { ...state, quickArea: task.area, tasks: [...state.tasks, task] };
+  return saveTask(state, { title, area });
 }
 
 export function removeProject(state, id) {
@@ -119,14 +135,16 @@ export function importBackup(json) {
         (task.project !== null && (!projects.has(task.project) || projects.get(task.project).area !== task.area)) ||
         !statuses.includes(task.status) || (task.due !== null && !validDay(task.due)) ||
         (dueTime !== null && (task.due === null || typeof dueTime !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(dueTime))) ||
-        typeof task.notes !== 'string' || !validTimestamp(task.createdAt) ||
+        typeof task.notes !== 'string' ||
+        (task.description !== undefined && typeof task.description !== 'string') || !validTimestamp(task.createdAt) ||
         (task.status === 'Done' ? !validTimestamp(task.completedAt) : task.completedAt !== null) ||
         (task.sample !== undefined && typeof task.sample !== 'boolean')) {
       throw new Error('The backup contains an invalid or duplicate task.');
     }
     ids.add(task.id);
     const { id, title, area, project, status, due, notes, createdAt, completedAt, sample } = task;
-    return { id, title, area: area ?? defaultArea, project, status, due, dueTime, notes, createdAt, completedAt, ...(sample ? { sample } : {}) };
+    return { id, title, area: area ?? defaultArea, project, status, due, dueTime, notes, createdAt, completedAt,
+      ...(task.description !== undefined ? { description: task.description } : {}), ...(sample ? { sample } : {}) };
   });
   return { ...blank(), quickArea: areas.includes(value.quickArea) ? value.quickArea : defaultArea, projects: [...projects.values()], tasks };
 }

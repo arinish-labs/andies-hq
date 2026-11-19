@@ -1,7 +1,8 @@
 import {
-  areas, statuses, bangkokClock, isOverdue, quickAddTask, setStatus, selectTasks, samples,
+  areas, statuses, bangkokClock, isOverdue, offset, saveTask, setStatus, selectTasks, samples,
   importBackup, exportBackup, removeProject, clearSamples
-} from './model.mjs?v=1.1';
+} from './model.mjs?v=1.2';
+import { cleanDescription, descriptionHtml, mountDescription } from './description.mjs?v=1.2';
 
 const icons = {
   Today: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/>',
@@ -25,6 +26,18 @@ const escape = value => String(value).replace(/[&<>"']/g, char => ({
 })[char]);
 const $ = selector => document.querySelector(selector);
 const storageKey = 'andie-flow-v1';
+const draftKey = id => `${storageKey}-draft-${id ? 'task-' + id : 'new'}`;
+
+function readBackup(json) {
+  const snapshot = importBackup(json);
+  for (const task of snapshot.tasks) {
+    if (task.description === undefined) continue;
+    const description = cleanDescription(task.description);
+    task.description = description.html;
+    task.notes = description.text;
+  }
+  return snapshot;
+}
 const navigation = ['Today', ...areas, 'Upcoming', 'More'];
 const editor = $('#editor');
 const confirmDialog = $('#confirm');
@@ -33,8 +46,8 @@ let loadError = '';
 let needsSave = false;
 try {
   const saved = localStorage.getItem(storageKey);
-  state = saved === null ? samples() : importBackup(saved);
-  needsSave = saved !== exportBackup(state);
+  state = saved === null ? samples() : readBackup(saved);
+  needsSave = saved === null;
 } catch {
   loadError = 'Andie’s HQ could not read its local data. Browser storage may be unavailable or the saved data may be damaged.';
 }
@@ -119,7 +132,7 @@ const empty = {
   Upcoming: ['Nothing upcoming', 'Give a task a future due date to see it here.'],
   Waiting: ['Nothing on hold', 'Set a task to Waiting to see it here.'],
   Completed: ['No completed tasks yet', 'Finished tasks will appear here. You can reopen them anytime.'],
-  Search: ['No matching tasks', 'Try a different word from the title, notes, or project name.']
+  Search: ['No matching tasks', 'Try a different word from the title, description, or project name.']
 };
 
 function card(task) {
@@ -131,7 +144,7 @@ function card(task) {
   const scheduled = task.dueTime ? `${dueLabel} · ${task.dueTime}` : dueLabel;
   return `<li class="task ${done ? 'done' : ''}">
     <button type="button" class="task-check" data-toggle="${escape(task.id)}" aria-label="${done ? 'Reopen' : 'Complete'} ${escape(task.title)}"><span>${done ? icon('check') : ''}</span></button>
-    <button type="button" class="task-info" data-edit="${escape(task.id)}">
+    <button type="button" class="task-info" data-detail="${escape(task.id)}">
       <span class="task-title">${escape(task.title)}</span>
       <span class="task-meta"><span class="home ${task.area.toLowerCase()}"><i></i>${task.area}</span>
       ${project ? `<span class="project-name">${escape(project.name)}</span>` : ''}
@@ -208,7 +221,7 @@ function render() {
   } else if (view === 'Backup') main.innerHTML = backupView();
   else if (view === 'Search') {
     main.innerHTML = `<div class="page-heading"><h1>Search</h1><p>Find open and completed tasks.</p></div>
-      <label class="search-field">${icon('Search')}<input id="query" type="search" aria-label="Search tasks" placeholder="Title, notes, or project" value="${escape(query)}"></label>
+      <label class="search-field">${icon('Search')}<input id="query" type="search" aria-label="Search tasks" placeholder="Title, description, or project" value="${escape(query)}"></label>
       <div id="search-results">${taskList(tasks)}</div>`;
   } else {
     const project = view.startsWith('project:') ? projectFor(view.slice(8)) : null;
@@ -224,13 +237,8 @@ function render() {
 function dialogFrame(title, body) {
   editor.innerHTML = `<div class="dialog-heading"><h2 id="editor-title">${title}</h2>
     <button class="icon-button" type="button" data-action="close" aria-label="Close">${icon('close')}</button></div>${body}`;
-  editor.showModal();
-}
-
-function quickAdd() {
-  dialogFrame('Quick Add', `<form id="quick-form"><label>Task title<input name="title" required autofocus placeholder="What do you need to do?"></label>
-    <label>Area<select name="area">${areaOptions(state.quickArea)}</select></label>
-    <button type="submit" class="primary">Add task</button></form>`);
+  if (!editor.open) editor.showModal();
+  else (editor.querySelector('[autofocus]') ?? editor.querySelector('button')).focus();
 }
 
 const option = (value, label, selected) =>
@@ -243,21 +251,112 @@ function projectOptions(area, selected) {
     .map(project => option(project.id, project.name, selected)).join('');
 }
 
-function editTask(task) {
-  dialogFrame('Edit task', `<form id="task-form" data-id="${escape(task.id)}">
-    <label>Title<input name="title" required value="${escape(task.title)}" autofocus></label>
+const dateShortcuts = [['Today', 0], ['Tomorrow', 1], ['Next Week', 7]];
+const formatting = [
+  ['bold', 'Bold', '<b>B</b>'], ['italic', 'Italic', '<i>I</i>'],
+  ['insertUnorderedList', 'Bullet list', '• List'], ['insertOrderedList', 'Numbered list', '1. List'],
+  ['checklist', 'Checklist', '☐ List'], ['checked', 'Check or uncheck item', '✓ Item'],
+  ['link', 'Add link', 'Link']
+];
+
+function taskForm(task) {
+  const id = task?.id ?? '';
+  const initial = {
+    title: task?.title ?? '', area: task?.area ?? state.quickArea, project: task?.project ?? '',
+    due: task?.due ?? '', dueTime: task?.dueTime ?? '', status: task?.status ?? 'To Do',
+    description: task ? descriptionHtml(task) : ''
+  };
+  let draft;
+  try {
+    draft = JSON.parse(localStorage.getItem(draftKey(id)));
+    if (!draft || !Object.keys(initial).every(key => typeof draft[key] === 'string') ||
+        !areas.includes(draft.area) || !statuses.includes(draft.status)) draft = null;
+  } catch {
+    draft = null;
+  }
+  const fields = draft ?? initial;
+  dialogFrame(task ? 'Edit task' : 'Add task', `<form id="task-form" data-id="${escape(id)}">
+    <label>Task title<input name="title" required placeholder="What do you need to do?" value="${escape(fields.title)}" autofocus></label>
     <div class="form-grid">
-      <label>Area<select name="area">${areaOptions(task.area)}</select></label>
-      <label>Project<select name="project">${projectOptions(task.area, task.project ?? '')}</select></label>
-      <label>Status<select name="status">${statuses.map(status => option(status, status, task.status)).join('')}</select></label>
-      <label>Due date<input name="due" type="date" min="0001-01-01" max="9999-12-31" value="${task.due ?? ''}"></label>
-      <label>Due time (Bangkok)<input name="dueTime" type="time" lang="en-GB" step="60" value="${task.dueTime ?? ''}" ${task.due ? '' : 'disabled'}></label>
+      <label>Area<select name="area" required>${areaOptions(fields.area)}</select></label>
+      <label>Project<select name="project">${projectOptions(fields.area, fields.project)}</select></label>
+      <label>Due date<input name="due" type="date" min="0001-01-01" max="9999-12-31" value="${escape(fields.due)}"></label>
+      <label>Due time (Bangkok)<input name="dueTime" type="time" lang="en-GB" step="60" value="${escape(fields.dueTime)}"></label>
+      <div class="date-shortcuts" role="group" aria-label="Due date shortcuts">${dateShortcuts.map(([label, days]) =>
+        `<button type="button" class="secondary" data-date-offset="${days}">${label}</button>`).join('')}</div>
+      <label>Status<select name="status">${statuses.map(status => option(status, status, fields.status)).join('')}</select></label>
     </div>
-    <label>Notes<textarea name="notes" rows="3">
-${escape(task.notes)}</textarea></label>
-    <div class="dialog-actions"><button type="button" class="danger" data-delete-task="${escape(task.id)}">Delete task</button>
-      <button class="primary" type="submit">Save changes</button></div></form>`);
+    <div class="description-editor">
+      <span id="description-label">Description</span>
+      <div class="format-buttons" role="group" aria-label="Description formatting">${formatting.map(([command, label, text]) =>
+        `<button type="button" class="secondary" data-format="${command}" aria-label="${label}" title="${label}">${text}</button>`).join('')}</div>
+      <div class="rich-text" id="task-description" contenteditable="true" role="textbox" aria-labelledby="description-label" aria-multiline="true"></div>
+    </div>
+    <div class="form-error" role="alert"></div>
+    <div class="dialog-actions"><button type="button" class="secondary" data-action="close">Cancel</button>
+      ${task ? `<button type="button" class="danger" data-delete-task="${escape(id)}">Delete task</button>` : ''}
+      <button class="primary" type="submit">Save Task</button></div></form>`);
+  const form = $('#task-form');
+  const field = $('#task-description');
+  field.innerHTML = draft ? cleanDescription(draft.description).html : initial.description;
+  const originalDescription = cleanDescription(initial.description).html;
+  const baseline = JSON.stringify({ ...initial, description: originalDescription });
+  const compareTask = value => JSON.stringify(value, Object.keys(value ?? {}).sort());
+  const originalTask = compareTask(task);
+  form.taskChangedElsewhere = () => Boolean(id) && compareTask(state.tasks.find(item => item.id === id)) !== originalTask;
+  form.details = () => {
+    const description = cleanDescription(field.innerHTML);
+    return { values: { ...Object.fromEntries(new FormData(form)), description: description.html }, notes: description.text };
+  };
+  form.hasChanges = () => JSON.stringify(form.details().values) !== baseline;
+  form.hasDescriptionChanges = description => description !== originalDescription;
+  form.clearDraft = () => {
+    try { localStorage.removeItem(draftKey(id)); } catch { /* Storage may be unavailable. */ }
+  };
+  const persistDraft = () => {
+    const snapshot = JSON.stringify(form.details().values);
+    try {
+      if (snapshot === baseline) form.clearDraft();
+      else localStorage.setItem(draftKey(id), snapshot);
+    } catch { /* The discard warning remains available. */ }
+  };
+  form.addEventListener('input', persistDraft);
+  form.addEventListener('change', persistDraft);
+  mountDescription(field, form.querySelector('.format-buttons'), persistDraft);
 }
+
+function taskDetail(task) {
+  const project = projectFor(task.project);
+  const due = task.due ? dateLabel(task.due, { month: 'long', day: 'numeric', year: 'numeric' }) : 'No due date';
+  const description = descriptionHtml(task);
+  dialogFrame(escape(task.title), `<div class="task-detail">
+    <dl><dt>Area</dt><dd>${task.area}</dd>
+      ${project ? `<dt>Project</dt><dd>${escape(project.name)}</dd>` : ''}
+      <dt>Status</dt><dd>${task.status}</dd>
+      <dt>Due</dt><dd>${due}${task.dueTime ? ` · ${task.dueTime} (Bangkok)` : ''}</dd></dl>
+    ${description ? `<h3>Description</h3><div class="rich-text">${description}</div>` : ''}
+    <div class="dialog-actions">
+      <button type="button" class="secondary" data-edit="${escape(task.id)}">Edit</button>
+      <button type="button" class="primary" data-toggle="${escape(task.id)}">${task.status === 'Done' ? 'Reopen' : 'Complete'}</button>
+    </div></div>`);
+}
+
+function closeEditor() {
+  const form = editor.querySelector('#task-form');
+  if (!form?.hasChanges()) {
+    editor.close();
+    return;
+  }
+  confirmAction('Discard unsaved changes?', 'You can cancel to keep editing this task.', 'Discard', () => {
+    form.clearDraft();
+    editor.close();
+  });
+}
+
+editor.addEventListener('cancel', event => {
+  event.preventDefault();
+  closeEditor();
+});
 
 function editProject(area, project = null) {
   dialogFrame(project ? 'Edit project' : 'New project', `<form id="project-form" data-area="${area}" data-id="${escape(project?.id ?? '')}">
@@ -301,19 +400,27 @@ document.addEventListener('click', event => {
   if (!state) return;
   const button = event.target.closest('button');
   if (!button) return;
-  const { view: key, edit, toggle, projectNew, deleteTask, deleteProject, action } = button.dataset;
+  const { view: key, edit, detail, toggle, projectNew, deleteTask, deleteProject, dateOffset, action } = button.dataset;
   if (key) go(key);
-  else if (button.classList.contains('open-add')) quickAdd();
+  else if (button.classList.contains('open-add')) taskForm();
+  else if (dateOffset !== undefined) {
+    const date = button.form.elements.due;
+    date.value = offset(bangkokClock().day, Number(dateOffset));
+    date.dispatchEvent(new Event('input', { bubbles: true }));
+  }
   else if (projectNew) editProject(projectNew);
-  else if (edit) editTask(state.tasks.find(task => task.id === edit));
+  else if (detail) taskDetail(state.tasks.find(task => task.id === detail));
+  else if (edit) taskForm(state.tasks.find(task => task.id === edit));
   else if (toggle) {
     const task = state.tasks.find(task => task.id === toggle);
     const done = task.status === 'Done';
     finish({ ...state, tasks: state.tasks.map(item => item.id === toggle ? setStatus(item, done ? 'To Do' : 'Done') : item) },
       done ? 'Task reopened.' : 'Task completed.');
   } else if (deleteTask) {
-    confirmAction('Delete this task?', 'This removes the task from all views.', 'Delete task', () =>
-      finish({ ...state, tasks: state.tasks.filter(task => task.id !== deleteTask) }, 'Task deleted.'));
+    const form = $('#task-form');
+    confirmAction('Delete this task?', 'This removes the task from all views.', 'Delete task', () => {
+      if (finish({ ...state, tasks: state.tasks.filter(task => task.id !== deleteTask) }, 'Task deleted.')) form.clearDraft();
+    });
   } else if (deleteProject) {
     const project = projectFor(deleteProject);
     confirmAction('Delete this project?', `Its tasks will move directly into ${project.area}.`, 'Delete project', () => {
@@ -323,7 +430,7 @@ document.addEventListener('click', event => {
         announce('Project deleted. Its tasks are still in ' + project.area + '.');
       }
     });
-  } else if (action === 'close') editor.close();
+  } else if (action === 'close') closeEditor();
   else if (action === 'edit-project') {
     const project = projectFor(view.slice(8));
     editProject(project.area, project);
@@ -346,15 +453,28 @@ document.addEventListener('submit', event => {
     required.reportValidity();
     return;
   }
-  if (form.id === 'quick-form') {
-    const area = fields.get('area');
-    finish(quickAddTask(state, name, area), `Added to ${area}.`);
-  } else if (form.id === 'task-form') {
-    const task = state.tasks.find(item => item.id === form.dataset.id);
-    const due = fields.get('due') || null;
-    const updated = setStatus({ ...task, title: name, area: fields.get('area'), project: fields.get('project') || null,
-      due, dueTime: due ? fields.get('dueTime') || null : null, notes: fields.get('notes') }, fields.get('status'));
-    finish({ ...state, tasks: state.tasks.map(item => item.id === task.id ? updated : item) }, 'Task saved.');
+  if (form.id === 'task-form') {
+    const { values, notes } = form.details();
+    const { title, area, project, status, due, dueTime, description } = values;
+    const error = form.querySelector('.form-error');
+    if (form.taskChangedElsewhere()) {
+      error.textContent = 'This task changed in another tab. Close and reopen it before saving.';
+      return;
+    }
+    if (dueTime && !due) {
+      error.textContent = 'Choose a due date for this time.';
+      form.elements.due.focus();
+      return;
+    }
+    const changes = { title, area, project: project || null, status, due: due || null, dueTime: dueTime || null };
+    if (!form.dataset.id || form.hasDescriptionChanges(description)) Object.assign(changes, { notes, description });
+    try {
+      const next = saveTask(state, changes, form.dataset.id);
+      if (finish(next, form.dataset.id ? 'Task saved.' : `Added to ${area}.`)) form.clearDraft();
+      else error.textContent = 'Could not save on this device. Your form is still open.';
+    } catch (problem) {
+      error.textContent = problem.message;
+    }
   } else if (form.id === 'project-form') {
     const project = { id: form.dataset.id || crypto.randomUUID(), name, area: form.dataset.area };
     const projects = form.dataset.id ? state.projects.map(item => item.id === project.id ? project : item) : [...state.projects, project];
@@ -369,22 +489,20 @@ document.addEventListener('input', event => {
   } else event.target.setCustomValidity?.('');
 });
 
-document.addEventListener('change', async event => {
+document.addEventListener('change', event => {
   const field = event.target;
   if (field.form?.id === 'task-form' && field.name === 'area') {
-    const project = field.form.elements.project;
-    project.innerHTML = projectOptions(field.value, '');
+    field.form.elements.project.innerHTML = projectOptions(field.value, '');
   }
-  if (field.form?.id === 'task-form' && field.name === 'due') {
-    const time = field.form.elements.dueTime;
-    time.disabled = !field.value;
-    if (time.disabled) time.value = '';
-  }
+}, true);
+
+document.addEventListener('change', async event => {
+  const field = event.target;
   if (field.id === 'backup-file' && field.files.length) {
     const file = field.files[0];
     field.value = '';
     try {
-      const next = importBackup(await file.text());
+      const next = readBackup(await file.text());
       confirmAction('Restore this backup?', 'This replaces your current tasks and projects with the contents of the selected backup.', 'Replace data', () =>
         finish(next, 'Backup restored.'));
     } catch (error) {
@@ -418,10 +536,12 @@ setInterval(refreshClock, 1000);
 window.addEventListener('storage', event => {
   if (event.key !== storageKey || event.newValue === null) return;
   try {
-    state = importBackup(event.newValue);
+    state = readBackup(event.newValue);
     loadError = '';
-    editor.close();
-    confirmDialog.close();
+    if (!editor.querySelector('#task-form') || !editor.open) {
+      editor.close();
+      confirmDialog.close();
+    }
     view = readView();
     render();
   } catch {
