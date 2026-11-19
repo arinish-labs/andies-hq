@@ -1,14 +1,13 @@
 import {
-  areas, statuses, today, makeTask, setStatus, selectTasks, samples,
+  areas, statuses, bangkokClock, isOverdue, quickAddTask, setStatus, selectTasks, samples,
   importBackup, exportBackup, removeProject, clearSamples
-} from './model.mjs';
+} from './model.mjs?v=1.1';
 
 const icons = {
   Today: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/>',
   Upcoming: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M7 3v4m10-4v4M3 10h18m-13 5h2m4 0h2"/>',
   Waiting: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   Completed: '<circle cx="12" cy="12" r="9"/><path d="m8 12 2.5 2.5 5.5-5.5"/>',
-  Inbox: '<path d="M3 13l3-8h12l3 8v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zm0 0h5l2 3h4l2-3h5"/>',
   Work: '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M3 12h18m-9 0v2"/>',
   Personal: '<path d="M20 9c0 5-8 10-8 10S4 14 4 9a4.5 4.5 0 0 1 8-2.8A4.5 4.5 0 0 1 20 9Z"/>',
   Search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/>',
@@ -26,22 +25,22 @@ const escape = value => String(value).replace(/[&<>"']/g, char => ({
 })[char]);
 const $ = selector => document.querySelector(selector);
 const storageKey = 'andie-flow-v1';
-const smart = ['Today', 'Upcoming', 'Waiting', 'Completed'];
+const navigation = ['Today', ...areas, 'Upcoming', 'More'];
 const editor = $('#editor');
 const confirmDialog = $('#confirm');
 let state;
 let loadError = '';
-let needsSeed = false;
+let needsSave = false;
 try {
   const saved = localStorage.getItem(storageKey);
-  needsSeed = saved === null;
-  state = needsSeed ? samples() : importBackup(saved);
+  state = saved === null ? samples() : importBackup(saved);
+  needsSave = saved !== exportBackup(state);
 } catch {
   loadError = 'Andie’s HQ could not read its local data. Browser storage may be unavailable or the saved data may be damaged.';
 }
 let view = 'Today';
 let query = '';
-let day = today();
+let clock = bangkokClock();
 let noticeTimer;
 
 function announce(message) {
@@ -77,7 +76,7 @@ function viewName(key) {
 function navButton(key, { count = false, iconName = key, className = '', active = key === view } = {}) {
   const name = viewName(key);
   return `<button class="nav-item ${className}" type="button" data-view="${escape(key)}" ${active ? 'aria-current="page"' : ''}>
-    ${icon(iconName)}<span>${escape(name)}</span>${count ? `<small>${selectTasks(state, key, day).length}</small>` : ''}
+    ${icon(iconName)}<span>${escape(name)}</span>${count ? `<small>${selectTasks(state, key, clock.day).length}</small>` : ''}
   </button>`;
 }
 
@@ -88,7 +87,8 @@ function navGroup(title, entries) {
 function readView() {
   try {
     const key = decodeURIComponent(location.hash.slice(1));
-    if ([...smart, ...areas, 'Inbox', 'Search', 'More', 'Backup'].includes(key) ||
+    if (key === 'Inbox') return 'Work';
+    if ([...navigation, 'Waiting', 'Completed', 'Search', 'Backup'].includes(key) ||
         (key.startsWith('project:') && projectFor(key.slice(8)))) return key;
   } catch {
     return 'Today';
@@ -108,7 +108,6 @@ function go(key) {
 
 const descriptions = {
   Today: 'Due today and overdue',
-  Inbox: 'New tasks to sort when you’re ready.',
   Upcoming: 'Tasks due after today.',
   Waiting: 'Tasks that are on hold.',
   Completed: 'Your finished tasks.',
@@ -117,7 +116,6 @@ const descriptions = {
 };
 const empty = {
   Today: ['You’re all caught up', 'Tasks with a due date of today or earlier will show up here.'],
-  Inbox: ['Your inbox is empty', 'Quick Add puts new tasks here. You can organize them anytime.'],
   Upcoming: ['Nothing upcoming', 'Give a task a future due date to see it here.'],
   Waiting: ['Nothing on hold', 'Set a task to Waiting to see it here.'],
   Completed: ['No completed tasks yet', 'Finished tasks will appear here. You can reopen them anytime.'],
@@ -127,18 +125,20 @@ const empty = {
 function card(task) {
   const project = projectFor(task.project);
   const done = task.status === 'Done';
-  const late = !done && task.due !== null && task.due < day;
-  const dueLabel = task.due === day ? 'Today' : task.due ? dateLabel(task.due, { month: 'short', day: 'numeric', ...(task.due.slice(0, 4) === day.slice(0, 4) ? {} : { year: 'numeric' }) }) : '';
+  const late = isOverdue(task, clock);
+  const dueLabel = task.due === clock.day && !task.dueTime ? 'Today' : task.due ?
+    dateLabel(task.due, { month: 'short', day: 'numeric', ...(task.due.slice(0, 4) === clock.day.slice(0, 4) ? {} : { year: 'numeric' }) }) : '';
+  const scheduled = task.dueTime ? `${dueLabel} · ${task.dueTime}` : dueLabel;
   return `<li class="task ${done ? 'done' : ''}">
     <button type="button" class="task-check" data-toggle="${escape(task.id)}" aria-label="${done ? 'Reopen' : 'Complete'} ${escape(task.title)}"><span>${done ? icon('check') : ''}</span></button>
     <button type="button" class="task-info" data-edit="${escape(task.id)}">
       <span class="task-title">${escape(task.title)}</span>
-      <span class="task-meta"><span class="home ${task.area?.toLowerCase() ?? 'inbox'}"><i></i>${task.area ?? 'Inbox'}</span>
+      <span class="task-meta"><span class="home ${task.area.toLowerCase()}"><i></i>${task.area}</span>
       ${project ? `<span class="project-name">${escape(project.name)}</span>` : ''}
       ${task.status === 'To Do' || done ? '' : `<span class="status">${task.status}</span>`}</span>
     </button>
-    ${done ? `<span class="due">${dateLabel(task.completedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</span>` :
-      task.due ? `<span class="due ${late ? 'overdue' : ''}">${icon('Upcoming')}${late ? 'Overdue · ' : ''}${dueLabel}</span>` : ''}
+    ${done ? `<span class="due"><span>${task.dueTime ? `Due ${scheduled}<br>Completed ` : ''}${dateLabel(task.completedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</span></span>` :
+      task.due ? `<span class="due ${late ? 'overdue' : ''}">${icon('Upcoming')}${late ? 'Overdue · ' : ''}${scheduled}</span>` : ''}
     <button type="button" class="icon-button edit-button" data-edit="${escape(task.id)}" aria-label="Edit ${escape(task.title)}">${icon('More')}</button>
   </li>`;
 }
@@ -150,9 +150,9 @@ function taskList(tasks) {
 }
 
 function todayView(tasks) {
-  const overdue = tasks.filter(task => task.due < day).length;
+  const overdue = tasks.filter(task => isOverdue(task, clock)).length;
   return `<section class="hero">
-    <div class="hero-content"><div class="hero-date">${icon('Upcoming')}${dateLabel(day, { weekday: 'long', month: 'long', day: 'numeric' })}</div>
+    <div class="hero-content"><div class="hero-date">${icon('Upcoming')}${dateLabel(clock.day, { weekday: 'long', month: 'long', day: 'numeric' })}</div>
       <h1>Today</h1><p>${descriptions.Today}</p>
     </div>
     <div class="hero-art" aria-hidden="true"><span></span><span></span><span></span><i></i><b>✦</b><em>✧</em></div>
@@ -189,27 +189,22 @@ function render() {
     return;
   }
   $('.sidebar .open-add').innerHTML = icon('plus') + ' Quick Add';
-  $('#sidebar-nav').innerHTML =
-    navGroup('WORKSPACE', [navButton('Inbox', { count: true })]) +
-    navGroup('SMART VIEWS', smart.map(key => navButton(key, { count: key === 'Today' }))) +
-    navGroup('AREAS', areas.map(area => navButton(area) +
-      state.projects.filter(project => project.area === area).map(project =>
-        navButton('project:' + project.id, { className: 'nested' })).join('')));
-  $('#side-bottom').innerHTML = navButton('Backup', { className: 'backup-nav' }).replace('>Backup<', '>Data & backups<');
-  $('#bottom-nav').innerHTML = [
-    navButton('Today'), navButton('Inbox'),
-    `<button class="nav-item mobile-add open-add" type="button" aria-label="Quick Add"><span>${icon('plus')}</span></button>`,
-    navButton('Upcoming'), navButton('More', { active: !['Today', 'Inbox', 'Upcoming'].includes(view) && view !== 'Search' })
-  ].join('');
+  const navItems = (count = false) => navigation.map(key => navButton(key, {
+    count: count && key === 'Today',
+    active: key === 'More' ? !navigation.slice(0, -1).includes(view) && view !== 'Search' : key === view
+  }));
+  $('#sidebar-nav').innerHTML = navGroup('WORKSPACE', navItems(true));
+  $('#bottom-nav').innerHTML = navItems().join('');
+  $('.mobile-add').innerHTML = icon('plus');
   $('.search-button').innerHTML = icon('Search') + '<span>Search tasks</span>';
   $('.search-button').setAttribute('aria-label', 'Search tasks');
   $('#crumb').textContent = view === 'Backup' ? 'Data & backups' : viewName(view);
-  const tasks = selectTasks(state, view, day, query);
+  const tasks = selectTasks(state, view, clock.day, query);
   const main = $('#main');
   if (view === 'Today') main.innerHTML = todayView(tasks);
   else if (view === 'More') {
     main.innerHTML = `<div class="page-heading"><h1>More</h1></div>${navGroup('SMART VIEWS', [navButton('Waiting'), navButton('Completed')])}
-      ${navGroup('AREAS', areas.map(area => navButton(area)))}${navGroup('DATA', [navButton('Backup').replace('>Backup<', '>Data & backups<')])}`;
+      ${navGroup('DATA', [navButton('Backup').replace('>Backup<', '>Data & backups<')])}`;
   } else if (view === 'Backup') main.innerHTML = backupView();
   else if (view === 'Search') {
     main.innerHTML = `<div class="page-heading"><h1>Search</h1><p>Find open and completed tasks.</p></div>
@@ -222,8 +217,7 @@ function render() {
       ${project ? '<button type="button" class="secondary" data-action="edit-project">Edit project</button>' : ''}</div>
       ${isArea ? areaProjects(view) : ''}
       <div class="section-heading"><div><h2>${view === 'Completed' ? 'Completed tasks' : 'Tasks'}</h2><span class="count">${tasks.length}</span></div></div>
-      ${taskList(tasks)}
-      ${view === 'Inbox' ? `<button class="inline-add open-add" type="button">${icon('plus')} Add a task</button>` : ''}`;
+      ${taskList(tasks)}`;
   }
 }
 
@@ -235,11 +229,14 @@ function dialogFrame(title, body) {
 
 function quickAdd() {
   dialogFrame('Quick Add', `<form id="quick-form"><label>Task title<input name="title" required autofocus placeholder="What do you need to do?"></label>
-    <p class="form-hint">New tasks go to your Inbox.</p><button type="submit" class="primary">Add to Inbox</button></form>`);
+    <label>Area<select name="area">${areaOptions(state.quickArea)}</select></label>
+    <button type="submit" class="primary">Add task</button></form>`);
 }
 
 const option = (value, label, selected) =>
   `<option value="${escape(value)}"${value === selected ? ' selected' : ''}>${escape(label)}</option>`;
+
+const areaOptions = selected => areas.map(area => option(area, area, selected)).join('');
 
 function projectOptions(area, selected) {
   return option('', 'No project', selected) + state.projects.filter(project => project.area === area)
@@ -250,10 +247,11 @@ function editTask(task) {
   dialogFrame('Edit task', `<form id="task-form" data-id="${escape(task.id)}">
     <label>Title<input name="title" required value="${escape(task.title)}" autofocus></label>
     <div class="form-grid">
-      <label>Area<select name="area">${option('', 'Inbox', task.area ?? '')}${areas.map(area => option(area, area, task.area)).join('')}</select></label>
-      <label>Project<select name="project" ${task.area ? '' : 'disabled'}>${projectOptions(task.area, task.project ?? '')}</select></label>
+      <label>Area<select name="area">${areaOptions(task.area)}</select></label>
+      <label>Project<select name="project">${projectOptions(task.area, task.project ?? '')}</select></label>
       <label>Status<select name="status">${statuses.map(status => option(status, status, task.status)).join('')}</select></label>
       <label>Due date<input name="due" type="date" min="0001-01-01" max="9999-12-31" value="${task.due ?? ''}"></label>
+      <label>Due time (Bangkok)<input name="dueTime" type="time" lang="en-GB" step="60" value="${task.dueTime ?? ''}" ${task.due ? '' : 'disabled'}></label>
     </div>
     <label>Notes<textarea name="notes" rows="3">
 ${escape(task.notes)}</textarea></label>
@@ -292,7 +290,7 @@ function exportFile() {
   const url = URL.createObjectURL(new Blob([exportBackup(state)], { type: 'application/json' }));
   const link = document.createElement('a');
   link.href = url;
-  link.download = `andies-hq-${day}.json`;
+  link.download = `andies-hq-${clock.day}.json`;
   document.body.append(link);
   link.click();
   link.remove();
@@ -349,11 +347,13 @@ document.addEventListener('submit', event => {
     return;
   }
   if (form.id === 'quick-form') {
-    finish({ ...state, tasks: [...state.tasks, makeTask(name)] }, 'Added to Inbox.');
+    const area = fields.get('area');
+    finish(quickAddTask(state, name, area), `Added to ${area}.`);
   } else if (form.id === 'task-form') {
     const task = state.tasks.find(item => item.id === form.dataset.id);
-    const updated = setStatus({ ...task, title: name, area: fields.get('area') || null, project: fields.get('project') || null,
-      due: fields.get('due') || null, notes: fields.get('notes') }, fields.get('status'));
+    const due = fields.get('due') || null;
+    const updated = setStatus({ ...task, title: name, area: fields.get('area'), project: fields.get('project') || null,
+      due, dueTime: due ? fields.get('dueTime') || null : null, notes: fields.get('notes') }, fields.get('status'));
     finish({ ...state, tasks: state.tasks.map(item => item.id === task.id ? updated : item) }, 'Task saved.');
   } else if (form.id === 'project-form') {
     const project = { id: form.dataset.id || crypto.randomUUID(), name, area: form.dataset.area };
@@ -365,7 +365,7 @@ document.addEventListener('submit', event => {
 document.addEventListener('input', event => {
   if (event.target.id === 'query') {
     query = event.target.value;
-    $('#search-results').innerHTML = taskList(selectTasks(state, 'Search', day, query));
+    $('#search-results').innerHTML = taskList(selectTasks(state, 'Search', clock.day, query));
   } else event.target.setCustomValidity?.('');
 });
 
@@ -373,8 +373,12 @@ document.addEventListener('change', async event => {
   const field = event.target;
   if (field.form?.id === 'task-form' && field.name === 'area') {
     const project = field.form.elements.project;
-    project.disabled = !field.value;
     project.innerHTML = projectOptions(field.value, '');
+  }
+  if (field.form?.id === 'task-form' && field.name === 'due') {
+    const time = field.form.elements.dueTime;
+    time.disabled = !field.value;
+    if (time.disabled) time.value = '';
   }
   if (field.id === 'backup-file' && field.files.length) {
     const file = field.files[0];
@@ -399,15 +403,18 @@ window.addEventListener('hashchange', () => {
   }
 });
 
-function refreshDay() {
-  const next = today();
-  if (day !== next && state) {
-    day = next;
-    render();
-  }
+function refreshClock() {
+  const previous = clock;
+  clock = bangkokClock();
+  if (!state) return;
+  const changed = previous.day !== clock.day ||
+    state.tasks.some(task => isOverdue(task, previous) !== isOverdue(task, clock));
+  if (!changed) return;
+  if (view === 'Search') $('#search-results').innerHTML = taskList(selectTasks(state, view, clock.day, query));
+  else render();
 }
-document.addEventListener('visibilitychange', refreshDay);
-setInterval(refreshDay, 30000);
+document.addEventListener('visibilitychange', refreshClock);
+setInterval(refreshClock, 1000);
 window.addEventListener('storage', event => {
   if (event.key !== storageKey || event.newValue === null) return;
   try {
@@ -424,6 +431,6 @@ window.addEventListener('storage', event => {
 
 if (state) {
   view = readView();
-  if (needsSeed) save(state);
+  if (needsSave) save(state);
 }
 render();

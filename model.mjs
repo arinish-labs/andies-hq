@@ -1,14 +1,27 @@
 export const areas = ['Work', 'Personal'];
+export const defaultArea = areas[0];
 export const statuses = ['To Do', 'In Progress', 'Waiting', 'Done'];
-export const blank = () => ({ version: 1, projects: [], tasks: [] });
+export const blank = () => ({ version: 1, quickArea: defaultArea, projects: [], tasks: [] });
 
 const bangkok = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit'
+  timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3, hourCycle: 'h23'
 });
 
-export function today(now = new Date()) {
+export function bangkokClock(now = new Date()) {
   const parts = Object.fromEntries(bangkok.formatToParts(now).map(({ type, value }) => [type, value]));
-  return [parts.year, parts.month, parts.day].join('-');
+  return {
+    day: [parts.year, parts.month, parts.day].join('-'),
+    time: `${parts.hour}:${parts.minute}:${parts.second}.${parts.fractionalSecond}`
+  };
+}
+
+export const today = now => bangkokClock(now).day;
+
+export function isOverdue(task, clock = bangkokClock()) {
+  if (!task.due || task.status === 'Done') return false;
+  return task.due < clock.day ||
+    (task.due === clock.day && Boolean(task.dueTime) && clock.time > task.dueTime + ':00.000');
 }
 
 export function offset(day, days) {
@@ -24,10 +37,17 @@ export function setStatus(task, status, now = new Date()) {
 
 export function makeTask(title, fields = {}, now = new Date()) {
   if (!title.trim()) throw new Error('Enter a task title.');
+  if (!areas.includes(fields.area ?? defaultArea)) throw new Error('Choose Work or Personal.');
   return setStatus({
-    id: crypto.randomUUID(), title: title.trim(), area: null, project: null,
-    due: null, notes: '', createdAt: now.toISOString(), completedAt: null, ...fields
+    id: crypto.randomUUID(), title: title.trim(), project: null,
+    due: null, dueTime: null, notes: '', createdAt: now.toISOString(), completedAt: null, ...fields,
+    area: fields.area ?? defaultArea
   }, fields.status ?? 'To Do', now);
+}
+
+export function quickAddTask(state, title, area = state.quickArea ?? defaultArea) {
+  const task = makeTask(title, { area });
+  return { ...state, quickArea: task.area, tasks: [...state.tasks, task] };
 }
 
 export function removeProject(state, id) {
@@ -47,7 +67,6 @@ export function selectTasks(state, view, day = today(), query = '') {
       case 'Upcoming': return open && task.due !== null && task.due > day;
       case 'Waiting': return task.status === 'Waiting';
       case 'Completed': return !open;
-      case 'Inbox': return open && task.area === null;
       case 'Work':
       case 'Personal': return open && task.area === view;
       case 'Search': {
@@ -59,7 +78,9 @@ export function selectTasks(state, view, day = today(), query = '') {
   };
   return state.tasks.filter(matches).sort((a, b) => {
     if (view === 'Completed') return b.completedAt.localeCompare(a.completedAt);
-    return (a.due ?? '9999').localeCompare(b.due ?? '9999') || a.createdAt.localeCompare(b.createdAt);
+    return (a.due ?? '9999-99-99').localeCompare(b.due ?? '9999-99-99') ||
+      (a.dueTime ?? '24:00').localeCompare(b.dueTime ?? '24:00') ||
+      a.createdAt.localeCompare(b.createdAt);
   });
 }
 
@@ -92,10 +113,12 @@ export function importBackup(json) {
 
   const ids = new Set();
   const tasks = value.tasks.map(task => {
+    const dueTime = task?.dueTime === undefined ? null : task.dueTime;
     if (!named(task?.id) || ids.has(task.id) || !named(task.title) ||
         (task.area !== null && !areas.includes(task.area)) ||
         (task.project !== null && (!projects.has(task.project) || projects.get(task.project).area !== task.area)) ||
         !statuses.includes(task.status) || (task.due !== null && !validDay(task.due)) ||
+        (dueTime !== null && (task.due === null || typeof dueTime !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(dueTime))) ||
         typeof task.notes !== 'string' || !validTimestamp(task.createdAt) ||
         (task.status === 'Done' ? !validTimestamp(task.completedAt) : task.completedAt !== null) ||
         (task.sample !== undefined && typeof task.sample !== 'boolean')) {
@@ -103,9 +126,9 @@ export function importBackup(json) {
     }
     ids.add(task.id);
     const { id, title, area, project, status, due, notes, createdAt, completedAt, sample } = task;
-    return { id, title, area, project, status, due, notes, createdAt, completedAt, ...(sample ? { sample } : {}) };
+    return { id, title, area: area ?? defaultArea, project, status, due, dueTime, notes, createdAt, completedAt, ...(sample ? { sample } : {}) };
   });
-  return { version: 1, projects: [...projects.values()], tasks };
+  return { ...blank(), quickArea: areas.includes(value.quickArea) ? value.quickArea : defaultArea, projects: [...projects.values()], tasks };
 }
 
 export const exportBackup = state => JSON.stringify(state, null, 2);
@@ -117,7 +140,7 @@ export function samples(day = today()) {
   ];
   const task = (title, fields) => makeTask(title, { sample: true, ...fields });
   return {
-    version: 1, projects, tasks: [
+    ...blank(), projects, tasks: [
       task('Review homepage wireframes', { area: 'Work', project: 'project-studio', due: offset(day, -1), status: 'In Progress', notes: 'Check the mobile layout before sharing.' }),
       task('Send feedback to Mina', { area: 'Work', due: day }),
       task('Pick up a few groceries', { area: 'Personal', due: day }),

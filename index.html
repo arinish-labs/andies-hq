@@ -7,8 +7,8 @@
   <meta name="description" content="A simple personal task organizer.">
   <title>Andie’s HQ</title>
   <link rel="icon" href="mark.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="style.css">
-  <script type="module" src="app.mjs"></script>
+  <link rel="stylesheet" href="style.css?v=1.1">
+  <script type="module" src="app.mjs?v=1.1"></script>
 </head>
 <body>
   <div class="shell">
@@ -16,13 +16,15 @@
       <a class="brand" href="#Today"><img src="mark.svg" alt=""><span>Andie’s HQ</span></a>
       <button class="primary open-add" type="button"></button>
       <nav id="sidebar-nav" aria-label="Main navigation"></nav>
-      <div class="side-bottom" id="side-bottom"></div>
     </aside>
     <div class="workspace">
       <header class="topbar">
         <a class="brand mobile-brand" href="#Today"><img src="mark.svg" alt=""><span>Andie’s HQ</span></a>
         <div class="crumb" id="crumb"></div>
-        <button class="search-button" type="button" data-view="Search"></button>
+        <div class="top-actions">
+          <button class="search-button" type="button" data-view="Search"></button>
+          <button class="primary mobile-add open-add" type="button" aria-label="Quick Add"></button>
+        </div>
       </header>
       <main id="main"></main>
     </div>
